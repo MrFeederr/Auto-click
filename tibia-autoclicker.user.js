@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tibia Auto-Clicker (canvas)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      1.2.0
+// @version      1.2.1
 // @description  Auto-clique sintetico a cada X minutos em jogo de navegador (canvas). Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://*.tibia.com/*
@@ -271,40 +271,71 @@
       // Se o proprio painel estiver cobrindo o ponto, mira direto no canvas
       // (senao os cliques cairiam no painel em vez do jogo).
       if (ui.box && ui.box.contains(el)) el = canvas;
-      return { el, clientX, clientY };
+      return { el, canvas, clientX, clientY };
     }
     const el = document.querySelector(step.selector);
     if (!el) { panelLog('ERRO: alvo nao encontrado (' + step.selector + ')'); return null; }
     const r = el.getBoundingClientRect();
-    return { el, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    return { el, canvas: null, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   }
 
-  function firePointerEvent(el, type, x, y) {
+  // Coordenadas de tela aproximadas (algumas engines leem screenX/screenY).
+  function screenXY(x, y) {
+    return { sx: x + (window.screenX || 0), sy: y + (window.screenY || 0) };
+  }
+
+  function firePointerEvent(el, type, x, y, pressure) {
     if (typeof PointerEvent !== 'function') return;
+    const { sx, sy } = screenXY(x, y);
+    const down = (type === 'pointerdown');
     el.dispatchEvent(new PointerEvent(type, {
       bubbles: true, cancelable: true, composed: true, view: window,
       pointerId: 1, pointerType: 'mouse', isPrimary: true,
-      button: 0, buttons: type === 'pointerdown' ? 1 : 0, clientX: x, clientY: y,
+      width: 1, height: 1, pressure: pressure != null ? pressure : (down ? 0.5 : 0),
+      button: down || type === 'pointerup' ? 0 : -1,
+      buttons: down ? 1 : 0,
+      clientX: x, clientY: y, screenX: sx, screenY: sy,
     }));
   }
   function fireMouseEvent(el, type, x, y) {
+    const { sx, sy } = screenXY(x, y);
+    const down = (type === 'mousedown');
     el.dispatchEvent(new MouseEvent(type, {
       bubbles: true, cancelable: true, composed: true, view: window,
-      button: 0, buttons: type === 'mousedown' ? 1 : 0, clientX: x, clientY: y, detail: 1,
+      button: 0,
+      buttons: down ? 1 : 0,
+      clientX: x, clientY: y, screenX: sx, screenY: sy,
+      detail: type === 'click' ? 1 : 0,
     }));
   }
 
   // Dispara UM clique sintetico completo para um step. Retorna true se ok.
+  // A sequencia inclui um "move/hover" antes do clique porque muitas engines
+  // de canvas (SDL/Emscripten) so registram o clique no ponto onde o ponteiro
+  // "esta". Tambem foca a janela/canvas, pois alguns jogos ignoram input sem foco.
   function clickStep(step, label) {
     const t = resolveStepTarget(step);
     if (!t) return false;
-    const { el, clientX, clientY } = t;
-    firePointerEvent(el, 'pointerdown', clientX, clientY);
+    const { el, canvas, clientX, clientY } = t;
+
+    // Garante foco (jogos costumam ignorar input quando a aba/canvas perde foco;
+    // clicar num botao do painel tira o foco do jogo).
+    try { window.focus(); } catch (e) {}
+    try { (canvas || el).focus({ preventScroll: true }); } catch (e) {}
+
+    // 1) Move o ponteiro ate o alvo (hover/aim).
+    firePointerEvent(el, 'pointermove', clientX, clientY, 0);
+    fireMouseEvent(el, 'mousemove', clientX, clientY);
+    // 2) Pressiona.
+    firePointerEvent(el, 'pointerdown', clientX, clientY, 0.5);
     fireMouseEvent(el, 'mousedown', clientX, clientY);
+    // 3) Solta + click.
     fireMouseEvent(el, 'mouseup', clientX, clientY);
     fireMouseEvent(el, 'click', clientX, clientY);
-    firePointerEvent(el, 'pointerup', clientX, clientY);
-    panelLog(`${label} clique em (${Math.round(clientX)}, ${Math.round(clientY)})`);
+    firePointerEvent(el, 'pointerup', clientX, clientY, 0);
+
+    const tag = el && el.tagName ? el.tagName.toLowerCase() : '?';
+    panelLog(`${label} (${Math.round(clientX)}, ${Math.round(clientY)}) -> <${tag}>`);
     return true;
   }
 
