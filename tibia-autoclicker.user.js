@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tibia Auto-Clicker (CSS selector)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      2.3.0
+// @version      2.4.0
 // @description  Auto-clique sintetico a cada X minutos por seletor CSS. Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://baiakidle.com/*
@@ -317,9 +317,11 @@
     try { window.focus(); } catch (e) {}
     try { el.focus({ preventScroll: true }); } catch (e) {}
 
-    // Sequencia completa de eventos sinteticos (botao esquerdo).
+    // Hover + press (para engines que precisam do down/up). NAO disparamos um
+    // evento 'click' sintetico aqui: a ativacao vem do el.click() nativo abaixo.
+    // Antes disparavamos os dois -> o botao era acionado DUAS vezes por ciclo,
+    // o que em janelas/dialogos abria e ja fechava ("a janela do 2o clique fecha").
     firePointerEvent(el, 'pointerover', clientX, clientY, 0, pid);
-    firePointerEvent(el, 'pointerenter', clientX, clientY, 0, pid);
     fireMouseEvent(el, 'mouseover', clientX, clientY);
     firePointerEvent(el, 'pointermove', clientX, clientY, 0, pid);
     fireMouseEvent(el, 'mousemove', clientX, clientY);
@@ -327,14 +329,14 @@
     fireMouseEvent(el, 'mousedown', clientX, clientY);
     firePointerEvent(el, 'pointerup', clientX, clientY, 0, pid);
     fireMouseEvent(el, 'mouseup', clientX, clientY);
-    fireMouseEvent(el, 'click', clientX, clientY);
 
-    // Metodo nativo: aciona de forma confiavel o handler/acao padrao de
-    // elementos DOM (botoes, links). E o que a maioria dos scripts usa.
+    // Ativacao UNICA e confiavel (dispara onClick de handlers DOM/React e a acao
+    // padrao do elemento). Um unico acionamento por ciclo.
     try { el.click(); } catch (e) {}
 
     const tag = el.tagName ? el.tagName.toLowerCase() : '?';
-    panelLog(`${label} <${tag}> em (${Math.round(clientX)}, ${Math.round(clientY)})`);
+    const selShort = (step.selector || '').slice(0, 40);
+    panelLog(`${label} <${tag}> (${Math.round(clientX)},${Math.round(clientY)}) « ${selShort}`);
     return true;
   }
 
@@ -473,7 +475,10 @@
     .ac-step-head{display:flex;align-items:center;gap:6px;margin-bottom:6px}
     .ac-step-head label{display:flex;align-items:center;gap:5px;font-weight:600;flex:1 1 auto;cursor:pointer}
     #ac-log{background:#0f1114;border:1px solid #2c313a;border-radius:6px;height:92px;overflow:auto;padding:5px 7px;
-      font:10px/1.4 monospace;color:#9fe0a5;white-space:pre-wrap;word-break:break-word}
+      font:10px/1.4 monospace;color:#9fe0a5;white-space:pre-wrap;word-break:break-word;
+      user-select:text;-webkit-user-select:text;cursor:text}
+    .ac-sec-head{display:flex;align-items:center;justify-content:space-between;margin:0 0 6px}
+    .ac-sec-head h4{margin:0}
     .ac-foot{display:flex;gap:6px;margin-top:8px}
     .ac-foot .ac-btn{flex:1 1 auto}
     #ac-kbd{color:#6b7280;font-size:10px;margin-top:8px}
@@ -525,7 +530,10 @@
         </div>
 
         <div class="ac-sec">
-          <h4>Log (ultimos disparos)</h4>
+          <div class="ac-sec-head">
+            <h4>Log (ultimos disparos)</h4>
+            <button id="ac-copylog" class="ac-btn sm" title="Copia o log para a area de transferencia">Copiar log</button>
+          </div>
           <div id="ac-log"></div>
         </div>
 
@@ -608,6 +616,23 @@
     ui.between.addEventListener('change', () => { settings.betweenClicksMs = Math.max(0, Number(ui.between.value) || 0); saveSettings(); pushSeqConfig(); });
 
     box.querySelector('#ac-runall').addEventListener('click', () => runSequence(true));
+
+    const copyBtn = box.querySelector('#ac-copylog');
+    copyBtn.addEventListener('click', () => {
+      const text = logLines.join('\n');
+      const done = () => { const o = copyBtn.textContent; copyBtn.textContent = 'Copiado ✓'; setTimeout(() => { copyBtn.textContent = o; }, 1200); };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done)); }
+        else fallbackCopy(text, done);
+      } catch (e) { fallbackCopy(text, done); }
+    });
+    function fallbackCopy(text, done) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
     ui.saveBtn = box.querySelector('#ac-save');
     ui.saveBtn.addEventListener('click', () => {
       saveSettings();
