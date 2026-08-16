@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tibia Auto-Clicker (CSS selector)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      2.4.0
+// @version      2.5.0
 // @description  Auto-clique sintetico a cada X minutos por seletor CSS. Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://baiakidle.com/*
@@ -178,11 +178,12 @@
       for (let i = 0; i < count; i++) {
         timers.push(setTimeout(function () { if (running) postMessage({ type: 'click', ordinal: i }); }, i * betweenMs));
       }
-      // Apos o ultimo clique, espera intervalMs e recomeca.
+      // Momento do ULTIMO clique do loop.
       const lastAt = (count > 0 ? count - 1 : 0) * betweenMs;
-      const nextIn = lastAt + intervalMs;
-      timers.push(setTimeout(runCycle, nextIn));
-      postMessage({ type: 'cycle', nextIn: nextIn });
+      // A contagem do intervalo comeca DEPOIS que o loop termina (ultimo clique).
+      timers.push(setTimeout(function () { if (running) postMessage({ type: 'cycle', nextIn: intervalMs }); }, lastAt));
+      // Proximo loop = fim do loop atual + intervalo.
+      timers.push(setTimeout(runCycle, lastAt + intervalMs));
     }
     onmessage = function (e) {
       const m = e.data || {};
@@ -313,9 +314,9 @@
 
     // Libera qualquer captura de ponteiro remanescente do clique anterior.
     try { if (el.hasPointerCapture && el.hasPointerCapture(pid)) el.releasePointerCapture(pid); } catch (e) {}
-    // Foco (jogos costumam ignorar input quando a aba/elemento perde foco).
-    try { window.focus(); } catch (e) {}
-    try { el.focus({ preventScroll: true }); } catch (e) {}
+    // NAO chamamos focus(): para botoes DOM o el.click() nao precisa de foco, e
+    // focar a janela/um elemento fora de um dialogo pode FECHAR o dialogo
+    // (muitos fecham no blur) -- era o que fechava a "janela do 2o clique".
 
     // Hover + press (para engines que precisam do down/up). NAO disparamos um
     // evento 'click' sintetico aqui: a ativacao vem do el.click() nativo abaixo.
