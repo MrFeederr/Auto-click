@@ -25,9 +25,11 @@ tudo sem tocar no código. Tudo é salvo automaticamente com `GM_setValue`:
 
 - **Cabeçalho:** bolinha verde/vermelha ON/OFF + botão **Ligar/Desligar**.
 - **Intervalo:** slider + campo em segundos sincronizados, com contagem regressiva do próximo clique.
-- **Alvo do clique:** dropdown entre "Coordenadas do canvas" e "CSS selector" (os campos
-  correspondentes aparecem conforme a escolha), botão **Calibrar** e um texto explicando o que faz.
-- **Testar clique agora:** dispara um clique único imediato para validar o alvo.
+- **Cliques da sequência:** até **4 cliques** por ciclo, cada um com caixa "usar" (ative só os
+  que quiser — 1, 2 ou todos), dropdown "Coordenadas do canvas" ⇄ "CSS selector" com campos
+  conforme a escolha, e botões **Calibrar** e **Testar** por clique. Campo **Delay entre cliques**
+  (ms) define a espera entre um e o próximo.
+- **Testar sequência:** dispara a sequência inteira agora para validar.
 - **Log:** mini-área com as últimas ~10 linhas, cada uma com timestamp.
 - **Salvar** / **Restaurar padrões**.
 
