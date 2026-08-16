@@ -1,13 +1,14 @@
 // ==UserScript==
-// @name         Tibia Auto-Clicker (canvas)
+// @name         Tibia Auto-Clicker (CSS selector)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      1.2.1
-// @description  Auto-clique sintetico a cada X minutos em jogo de navegador (canvas). Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
+// @version      2.0.0
+// @description  Auto-clique sintetico a cada X minutos por seletor CSS. Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://*.tibia.com/*
 // @match        https://SEU-JOGO-AQUI/*            // <-- TROQUE pela URL do jogo (pode repetir @match)
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        unsafeWindow
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -15,29 +16,20 @@
 (function () {
   'use strict';
 
+  // Janela real da pagina (fora do sandbox do Tampermonkey), quando disponivel.
+  // Usar a janela real como `view` deixa os eventos mais parecidos com os nativos.
+  const PAGE_WIN = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+
   /* ============================================================================
    *  CONFIGURACAO  (mexa aqui em cima)
    *  ------------------------------------------------------------------------
-   *  Voce NAO precisa editar o codigo para usar: o painel de ajustes na tela
-   *  permite configurar tudo e salva com GM_setValue. Os valores abaixo sao
-   *  apenas os PADROES iniciais (primeira vez e "Restaurar padroes").
+   *  Voce NAO precisa editar o codigo: o painel na tela configura tudo e salva
+   *  com GM_setValue. Os valores abaixo sao apenas os PADROES iniciais.
    * ==========================================================================*/
 
-  // Como e um alvo de clique. Ate 4 deles sao disparados em sequencia por ciclo.
-  //   enabled        -> se este clique participa da sequencia
-  //   mode           -> 'canvas' (coordenadas x/y no canvas) ou 'selector' (CSS)
-  //   canvasSelector -> seletor do canvas do jogo (modo canvas)
-  //   canvasX/canvasY-> coordenadas relativas ao canto do canvas (modo canvas)
-  //   selector       -> seletor CSS do elemento (modo selector)
+  // Um alvo de clique = um seletor CSS. Ate 4 sao disparados em sequencia.
   function defaultStep(enabled) {
-    return {
-      enabled: !!enabled,
-      mode: 'canvas',
-      canvasSelector: 'canvas',
-      canvasX: 400,
-      canvasY: 300,
-      selector: 'canvas',
-    };
+    return { enabled: !!enabled, selector: '' };
   }
 
   const DEFAULTS = {
@@ -53,37 +45,35 @@
 
   // ---- Constantes de comportamento (edite so se quiser) ---------------------
   const CONST = {
-    MIN_INTERVAL_SEC: 5,     // intervalo minimo (nao deixa "zerar")
-    MAX_INTERVAL_SEC: 600,   // maximo do slider (10 min); o campo aceita mais
-    STEP_MS: 30000,          // passo dos atalhos Alt+= / Alt+- (30 s)
-    MAX_STEPS: 4,            // quantidade de cliques na sequencia
+    MIN_INTERVAL_SEC: 5,
+    MAX_INTERVAL_SEC: 600,
+    STEP_MS: 30000,
+    MAX_STEPS: 4,
 
-    // Atalhos (sempre combinados com Alt)
     HOTKEY_TOGGLE: 'k',      // Alt+K  -> liga/desliga
     HOTKEY_CALIBRATE: 'c',   // Alt+C  -> calibra o clique 1
-    HOTKEY_INC: '=',         // Alt+=  -> aumenta intervalo em STEP_MS
-    HOTKEY_DEC: '-',         // Alt+-  -> diminui intervalo em STEP_MS
+    HOTKEY_INC: '=',         // Alt+=  -> aumenta intervalo
+    HOTKEY_DEC: '-',         // Alt+-  -> diminui intervalo
 
-    START_ENABLED: false,    // comeca desligado; ligue com Alt+K ou pelo painel
+    START_ENABLED: false,
 
-    // Chaves de armazenamento (GM_setValue / localStorage)
-    STORE_SETTINGS: 'tibia_autoclick_settings', // config (JSON)
-    STORE_UI: 'tibia_autoclick_ui',             // posicao/estado do painel (JSON)
+    STORE_SETTINGS: 'tibia_autoclick_settings',
+    STORE_UI: 'tibia_autoclick_ui',
   };
 
   /* ============================================================================
    *  ESTADO INTERNO
    * ==========================================================================*/
 
-  let settings = clone(DEFAULTS);   // config corrente (usada nos cliques)
-  let enabled = false;              // auto-clique ligado?
-  let calibrateTarget = null;       // indice do step em calibracao, ou null
-  let nextClickAt = 0;              // timestamp (ms) do proximo ciclo
-  let worker = null;                // Web Worker que "bate" o tempo em background
-  let audioCtx = null;              // contexto WebAudio do keep-alive
-  const ui = {};                    // referencias aos elementos do painel
-  ui.steps = [];                    // referencias aos blocos de cada clique
-  const logLines = [];              // ultimas linhas da mini-area de log
+  let settings = clone(DEFAULTS);
+  let enabled = false;
+  let calibrateTarget = null;   // indice do step em calibracao, ou null
+  let nextClickAt = 0;
+  let worker = null;
+  let audioCtx = null;
+  const ui = {};
+  ui.steps = [];
+  const logLines = [];
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
 
@@ -117,24 +107,17 @@
     if (!raw) return;
     try {
       const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-
-      // Migracao de versoes antigas (config "achatada" com 1 alvo so).
-      if (obj && !obj.steps && obj.targetMode) {
-        const s0 = defaultStep(true);
-        s0.mode = obj.targetMode;
-        s0.canvasSelector = obj.canvasSelector || s0.canvasSelector;
-        s0.canvasX = obj.canvasX != null ? obj.canvasX : s0.canvasX;
-        s0.canvasY = obj.canvasY != null ? obj.canvasY : s0.canvasY;
-        s0.selector = obj.targetSelector || s0.selector;
-        obj.steps = [s0, defaultStep(false), defaultStep(false), defaultStep(false)];
-      }
-
       settings = Object.assign(clone(DEFAULTS), obj);
-      // Garante exatamente MAX_STEPS steps, completos.
       const steps = [];
       for (let i = 0; i < CONST.MAX_STEPS; i++) {
-        steps[i] = Object.assign(defaultStep(i === 0), (obj.steps && obj.steps[i]) || {});
+        const src = (obj.steps && obj.steps[i]) || {};
+        steps[i] = {
+          enabled: !!src.enabled,
+          // migra config antiga: usa selector; se so tinha canvas, fica vazio.
+          selector: typeof src.selector === 'string' ? src.selector : '',
+        };
       }
+      if (!obj.steps) steps[0].enabled = true;
       settings.steps = steps;
       settings.intervalMs = clampIntervalMs(settings.intervalMs);
       settings.betweenClicksMs = Math.max(0, Number(settings.betweenClicksMs) || 0);
@@ -144,9 +127,7 @@
     }
   }
 
-  function saveSettings() {
-    storageSet(CONST.STORE_SETTINGS, JSON.stringify(settings));
-  }
+  function saveSettings() { storageSet(CONST.STORE_SETTINGS, JSON.stringify(settings)); }
 
   function loadUiState() {
     const raw = storageGet(CONST.STORE_UI, null);
@@ -174,10 +155,7 @@
     const line = `[${ts().slice(0, 8)}] ${msg}`;
     logLines.push(line);
     while (logLines.length > 10) logLines.shift();
-    if (ui.log) {
-      ui.log.textContent = logLines.join('\n');
-      ui.log.scrollTop = ui.log.scrollHeight;
-    }
+    if (ui.log) { ui.log.textContent = logLines.join('\n'); ui.log.scrollTop = ui.log.scrollHeight; }
     console.log(`%c[AutoClick ${ts()}]`, 'color:#4caf50;font-weight:bold', msg);
   }
 
@@ -192,15 +170,14 @@
       audioCtx = new Ctx();
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
-      gain.gain.value = 0;            // ganho 0 = totalmente silencioso
+      gain.gain.value = 0;
       osc.connect(gain).connect(audioCtx.destination);
       osc.start();
       if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
     } catch (e) {
-      console.warn('[AutoClick] Nao foi possivel iniciar o keep-alive de audio:', e);
+      console.warn('[AutoClick] Keep-alive de audio falhou:', e);
     }
   }
-
   function stopAudioKeepAlive() {
     if (!audioCtx) return;
     try { audioCtx.close(); } catch (e) {}
@@ -220,10 +197,7 @@
       const msg = e.data || {};
       if (msg.type === 'start') { intervalMs = msg.intervalMs; schedule(); }
       else if (msg.type === 'stop') { clearTimeout(timer); timer = null; }
-      else if (msg.type === 'setInterval') {
-        intervalMs = msg.intervalMs;
-        if (timer !== null) schedule(); // reinicia contagem com o novo valor
-      }
+      else if (msg.type === 'setInterval') { intervalMs = msg.intervalMs; if (timer !== null) schedule(); }
     };
   `;
 
@@ -240,60 +214,49 @@
       }
     };
   }
-
   function workerStart() {
     createWorker();
     nextClickAt = Date.now() + settings.intervalMs;
     worker.postMessage({ type: 'start', intervalMs: settings.intervalMs });
   }
-  function workerStop() {
-    if (worker) worker.postMessage({ type: 'stop' });
-    nextClickAt = 0;
-  }
+  function workerStop() { if (worker) worker.postMessage({ type: 'stop' }); nextClickAt = 0; }
   function workerSetInterval() {
     if (worker) worker.postMessage({ type: 'setInterval', intervalMs: settings.intervalMs });
     if (enabled) nextClickAt = Date.now() + settings.intervalMs;
   }
 
   /* ============================================================================
-   *  RESOLUCAO DO ALVO E DISPARO DO CLIQUE SINTETICO
+   *  RESOLUCAO DO ALVO E DISPARO DO CLIQUE (botao ESQUERDO)
    * ==========================================================================*/
 
-  // Retorna { el, clientX, clientY } para um step, ou null.
+  // Retorna { el, clientX, clientY } para o step, ou null.
   function resolveStepTarget(step) {
-    if (step.mode === 'canvas') {
-      const canvas = document.querySelector(step.canvasSelector);
-      if (!canvas) { panelLog('ERRO: canvas nao encontrado (' + step.canvasSelector + ')'); return null; }
-      const r = canvas.getBoundingClientRect();
-      const clientX = r.left + Number(step.canvasX);
-      const clientY = r.top + Number(step.canvasY);
-      let el = document.elementFromPoint(clientX, clientY) || canvas;
-      // Se o proprio painel estiver cobrindo o ponto, mira direto no canvas
-      // (senao os cliques cairiam no painel em vez do jogo).
-      if (ui.box && ui.box.contains(el)) el = canvas;
-      return { el, canvas, clientX, clientY };
-    }
-    const el = document.querySelector(step.selector);
-    if (!el) { panelLog('ERRO: alvo nao encontrado (' + step.selector + ')'); return null; }
+    const sel = (step.selector || '').trim();
+    if (!sel) { panelLog('ERRO: seletor vazio. Calibre ou digite um seletor.'); return null; }
+    let el;
+    try { el = document.querySelector(sel); }
+    catch (e) { panelLog('ERRO: seletor invalido (' + sel + ')'); return null; }
+    if (!el) { panelLog('ERRO: alvo nao encontrado (' + sel + ')'); return null; }
     const r = el.getBoundingClientRect();
-    return { el, canvas: null, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    return { el, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
   }
 
-  // Coordenadas de tela aproximadas (algumas engines leem screenX/screenY).
   function screenXY(x, y) {
     return { sx: x + (window.screenX || 0), sy: y + (window.screenY || 0) };
   }
 
+  // Todos os eventos usam o botao ESQUERDO: button:0 e buttons:1 enquanto pressionado.
   function firePointerEvent(el, type, x, y, pressure) {
     if (typeof PointerEvent !== 'function') return;
     const { sx, sy } = screenXY(x, y);
     const down = (type === 'pointerdown');
+    const up = (type === 'pointerup');
     el.dispatchEvent(new PointerEvent(type, {
-      bubbles: true, cancelable: true, composed: true, view: window,
+      bubbles: true, cancelable: true, composed: true, view: PAGE_WIN,
       pointerId: 1, pointerType: 'mouse', isPrimary: true,
       width: 1, height: 1, pressure: pressure != null ? pressure : (down ? 0.5 : 0),
-      button: down || type === 'pointerup' ? 0 : -1,
-      buttons: down ? 1 : 0,
+      button: (down || up) ? 0 : -1,   // 0 = esquerdo; -1 = nenhum (para move)
+      buttons: down ? 1 : 0,           // 1 = esquerdo pressionado
       clientX: x, clientY: y, screenX: sx, screenY: sy,
     }));
   }
@@ -301,41 +264,41 @@
     const { sx, sy } = screenXY(x, y);
     const down = (type === 'mousedown');
     el.dispatchEvent(new MouseEvent(type, {
-      bubbles: true, cancelable: true, composed: true, view: window,
-      button: 0,
+      bubbles: true, cancelable: true, composed: true, view: PAGE_WIN,
+      button: 0,                        // 0 = botao esquerdo
       buttons: down ? 1 : 0,
       clientX: x, clientY: y, screenX: sx, screenY: sy,
       detail: type === 'click' ? 1 : 0,
     }));
   }
 
-  // Dispara UM clique sintetico completo para um step. Retorna true se ok.
-  // A sequencia inclui um "move/hover" antes do clique porque muitas engines
-  // de canvas (SDL/Emscripten) so registram o clique no ponto onde o ponteiro
-  // "esta". Tambem foca a janela/canvas, pois alguns jogos ignoram input sem foco.
+  // Dispara UM clique (esquerdo) sintetico completo no elemento do step.
   function clickStep(step, label) {
     const t = resolveStepTarget(step);
     if (!t) return false;
-    const { el, canvas, clientX, clientY } = t;
+    const { el, clientX, clientY } = t;
 
-    // Garante foco (jogos costumam ignorar input quando a aba/canvas perde foco;
-    // clicar num botao do painel tira o foco do jogo).
+    // Foco (jogos costumam ignorar input quando a aba/elemento perde foco).
     try { window.focus(); } catch (e) {}
-    try { (canvas || el).focus({ preventScroll: true }); } catch (e) {}
+    try { el.focus({ preventScroll: true }); } catch (e) {}
 
-    // 1) Move o ponteiro ate o alvo (hover/aim).
+    // Sequencia completa de eventos sinteticos (botao esquerdo).
     firePointerEvent(el, 'pointermove', clientX, clientY, 0);
     fireMouseEvent(el, 'mousemove', clientX, clientY);
-    // 2) Pressiona.
+    firePointerEvent(el, 'pointerover', clientX, clientY, 0);
+    fireMouseEvent(el, 'mouseover', clientX, clientY);
     firePointerEvent(el, 'pointerdown', clientX, clientY, 0.5);
     fireMouseEvent(el, 'mousedown', clientX, clientY);
-    // 3) Solta + click.
     fireMouseEvent(el, 'mouseup', clientX, clientY);
     fireMouseEvent(el, 'click', clientX, clientY);
     firePointerEvent(el, 'pointerup', clientX, clientY, 0);
 
-    const tag = el && el.tagName ? el.tagName.toLowerCase() : '?';
-    panelLog(`${label} (${Math.round(clientX)}, ${Math.round(clientY)}) -> <${tag}>`);
+    // Metodo nativo: aciona de forma confiavel o handler/acao padrao de
+    // elementos DOM (botoes, links). E o que a maioria dos scripts usa.
+    try { el.click(); } catch (e) {}
+
+    const tag = el.tagName ? el.tagName.toLowerCase() : '?';
+    panelLog(`${label} <${tag}> em (${Math.round(clientX)}, ${Math.round(clientY)})`);
     return true;
   }
 
@@ -344,7 +307,6 @@
     const active = [];
     settings.steps.forEach((s, i) => { if (s.enabled) active.push({ s, i }); });
     if (!active.length) { panelLog('Nenhum clique ativo.'); return; }
-
     let k = 0;
     (function next() {
       if (k >= active.length) return;
@@ -355,16 +317,15 @@
   }
 
   /* ============================================================================
-   *  CALIBRACAO (por clique/step)
+   *  CALIBRACAO (por clique/step) -> captura o seletor do proximo clique real
    * ==========================================================================*/
 
   function armCalibration(stepIndex) {
     calibrateTarget = stepIndex;
-    panelLog(`Calibracao do clique ${stepIndex + 1}: clique no ponto-alvo agora.`);
+    panelLog(`Calibracao do clique ${stepIndex + 1}: clique no elemento-alvo agora.`);
     const st = ui.steps[stepIndex];
     if (st) { st.calBtn.textContent = 'Clique no alvo...'; st.calBtn.style.background = '#ff9800'; st.calBtn.style.color = '#000'; }
   }
-
   function resetCalButton(i) {
     const st = ui.steps[i];
     if (st) { st.calBtn.textContent = 'Calibrar'; st.calBtn.style.background = ''; st.calBtn.style.color = ''; }
@@ -397,30 +358,14 @@
     calibrateTarget = null;
     resetCalButton(idx);
 
-    const step = settings.steps[idx];
-    const el = e.target;
-    const selector = cssPath(el);
-    const canvas = document.querySelector(step.canvasSelector);
-    let relX = null, relY = null;
-    if (canvas) {
-      const r = canvas.getBoundingClientRect();
-      relX = Math.round(e.clientX - r.left);
-      relY = Math.round(e.clientY - r.top);
-    }
-
-    if (step.mode === 'canvas' && canvas) {
-      step.canvasX = relX; step.canvasY = relY;
-    } else if (step.mode === 'selector') {
-      step.selector = selector;
-    }
+    const selector = cssPath(e.target);
+    settings.steps[idx].selector = selector;
     saveSettings();
     syncStepInputs(idx);
 
     console.log(`%c[AutoClick CALIBRACAO C${idx + 1} ${ts()}]`, 'color:#ff9800;font-weight:bold',
-      '\n  selector :', selector, '\n  elemento :', el,
-      '\n  canvas x/y:', (relX === null ? 'canvas nao encontrado' : { x: relX, y: relY }));
-    panelLog(`Clique ${idx + 1} calibrado: ${step.mode === 'canvas' ? `x=${relX}, y=${relY}` : selector}`);
-    // NAO chamamos preventDefault: o clique real segue normalmente.
+      '\n  selector :', selector, '\n  elemento :', e.target);
+    panelLog(`Clique ${idx + 1} calibrado: ${selector}`);
   }
 
   /* ============================================================================
@@ -478,7 +423,7 @@
     .ac-sec h4{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b93a1}
     .ac-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
     .ac-lbl{color:#b9c0ca;flex:0 0 auto}
-    #ac-panel input[type=text],#ac-panel input[type=number],#ac-panel select{
+    #ac-panel input[type=text],#ac-panel input[type=number]{
       background:#14161b;color:#e6e6e6;border:1px solid #454b55;border-radius:5px;padding:3px 6px;font:inherit;width:100%}
     #ac-panel input[type=number]{width:64px}
     #ac-slider{flex:1 1 auto}
@@ -516,7 +461,7 @@
       <div id="ac-head" title="Arraste para mover o painel">
         <span id="ac-dot"></span>
         <span id="ac-title">Auto-Click</span>
-        <button id="ac-power" title="Ligar/Desligar o auto-clique (Alt+K)">Ligar</button>
+        <button id="ac-power" title="Ligar/Desligar (Alt+K)">Ligar</button>
         <button id="ac-min" title="Recolher/expandir o painel">–</button>
       </div>
       <div id="ac-body">
@@ -525,24 +470,23 @@
           <h4>Intervalo entre ciclos</h4>
           <div class="ac-row">
             <input id="ac-slider" type="range" min="${CONST.MIN_INTERVAL_SEC}" max="${CONST.MAX_INTERVAL_SEC}" step="1"
-                   title="Arraste para ajustar o intervalo (em segundos)">
+                   title="Arraste para ajustar o intervalo (segundos)">
             <input id="ac-secs" type="number" min="${CONST.MIN_INTERVAL_SEC}" step="1"
                    title="Digite o intervalo em segundos e tecle Enter">
             <span class="ac-lbl">s</span>
           </div>
           <div class="ac-row">
             <span class="ac-lbl" style="flex:1 1 auto">Delay entre cliques</span>
-            <input id="ac-between" type="number" min="0" step="50"
-                   title="Espera entre um clique e o proximo da sequencia (ms)">
+            <input id="ac-between" type="number" min="0" step="50" title="Espera entre cliques da sequencia (ms)">
             <span class="ac-lbl">ms</span>
           </div>
           <div class="ac-hint">Proximo ciclo em: <span id="ac-count">--</span></div>
         </div>
 
         <div class="ac-sec">
-          <h4>Cliques da sequencia</h4>
+          <h4>Cliques da sequencia (seletor CSS)</h4>
           <div id="ac-steps"></div>
-          <div class="ac-hint">Marque quais cliques usar (1 a ${CONST.MAX_STEPS}). Sao disparados em ordem, com o delay acima.</div>
+          <div class="ac-hint">Marque quais cliques usar (1 a ${CONST.MAX_STEPS}). Use "Calibrar" e clique no elemento do jogo para capturar o seletor.</div>
         </div>
 
         <div class="ac-sec">
@@ -552,7 +496,7 @@
 
         <div class="ac-foot">
           <button id="ac-runall" class="ac-btn" title="Dispara a sequencia inteira agora">Testar sequencia</button>
-          <button id="ac-save" class="ac-btn primary" title="Salva a configuracao (ja e salva ao alterar)">Salvar</button>
+          <button id="ac-save" class="ac-btn primary" title="Salva a configuracao">Salvar</button>
           <button id="ac-reset" class="ac-btn" title="Volta tudo para o padrao">Padroes</button>
         </div>
         <div id="ac-kbd">Alt+K liga/desliga &middot; Alt+= / Alt+- ±30s &middot; Alt+C calibra o clique 1</div>
@@ -580,7 +524,6 @@
     updateHeader();
   }
 
-  // Cria os blocos de cada clique da sequencia.
   function buildSteps() {
     ui.steps = [];
     for (let i = 0; i < CONST.MAX_STEPS; i++) {
@@ -590,31 +533,12 @@
             <label title="Ative para incluir este clique na sequencia">
               <input type="checkbox" class="ac-en"> Clique ${i + 1}
             </label>
-            <button class="ac-btn sm ac-cal" title="Clique aqui e depois clique no ponto do jogo para capturar o alvo">Calibrar</button>
+            <button class="ac-btn sm ac-cal" title="Clique aqui e depois no elemento do jogo para capturar o seletor">Calibrar</button>
             <button class="ac-btn sm ac-test" title="Dispara so este clique agora">Testar</button>
           </div>
           <div class="ac-row">
-            <select class="ac-mode" title="Como o alvo deste clique e definido">
-              <option value="canvas">Coordenadas do canvas</option>
-              <option value="selector">CSS selector</option>
-            </select>
-          </div>
-          <div class="ac-canvas">
-            <div class="ac-row">
-              <span class="ac-lbl" style="width:52px">Canvas</span>
-              <input type="text" class="ac-csel" title="Seletor CSS do canvas do jogo (ex: canvas)">
-            </div>
-            <div class="ac-row">
-              <span class="ac-lbl" style="width:52px">X / Y</span>
-              <input type="number" class="ac-x" title="X relativo ao canto do canvas">
-              <input type="number" class="ac-y" title="Y relativo ao canto do canvas">
-            </div>
-          </div>
-          <div class="ac-selector">
-            <div class="ac-row">
-              <span class="ac-lbl" style="width:52px">Seletor</span>
-              <input type="text" class="ac-sel" title="Seletor CSS do elemento que recebe o clique">
-            </div>
+            <span class="ac-lbl" style="width:52px">Seletor</span>
+            <input type="text" class="ac-sel" placeholder="ex: #botao ou .classe" title="Seletor CSS do elemento que recebe o clique">
           </div>
         </div>
       `);
@@ -624,28 +548,12 @@
         en: block.querySelector('.ac-en'),
         calBtn: block.querySelector('.ac-cal'),
         testBtn: block.querySelector('.ac-test'),
-        mode: block.querySelector('.ac-mode'),
-        canvasFields: block.querySelector('.ac-canvas'),
-        selectorFields: block.querySelector('.ac-selector'),
-        csel: block.querySelector('.ac-csel'),
-        x: block.querySelector('.ac-x'),
-        y: block.querySelector('.ac-y'),
         sel: block.querySelector('.ac-sel'),
       };
 
       const idx = i;
-      refs.en.addEventListener('change', () => {
-        settings.steps[idx].enabled = refs.en.checked;
-        saveSettings(); updateStepVisual(idx);
-      });
-      refs.mode.addEventListener('change', () => {
-        settings.steps[idx].mode = refs.mode.value;
-        saveSettings(); syncStepInputs(idx);
-      });
-      refs.csel.addEventListener('change', () => { settings.steps[idx].canvasSelector = refs.csel.value.trim() || 'canvas'; saveSettings(); });
-      refs.x.addEventListener('change', () => { settings.steps[idx].canvasX = Number(refs.x.value) || 0; saveSettings(); });
-      refs.y.addEventListener('change', () => { settings.steps[idx].canvasY = Number(refs.y.value) || 0; saveSettings(); });
-      refs.sel.addEventListener('change', () => { settings.steps[idx].selector = refs.sel.value.trim() || 'canvas'; saveSettings(); });
+      refs.en.addEventListener('change', () => { settings.steps[idx].enabled = refs.en.checked; saveSettings(); updateStepVisual(idx); });
+      refs.sel.addEventListener('change', () => { settings.steps[idx].selector = refs.sel.value.trim(); saveSettings(); });
       refs.calBtn.addEventListener('click', () => armCalibration(idx));
       refs.testBtn.addEventListener('click', () => clickStep(settings.steps[idx], `TESTE [C${idx + 1}]`));
 
@@ -684,22 +592,13 @@
     makeDraggable(box, box.querySelector('#ac-head'));
   }
 
-  // Copia settings.steps[i] para os campos do bloco.
   function syncStepInputs(i) {
     const st = ui.steps[i]; const s = settings.steps[i];
     if (!st) return;
     st.en.checked = s.enabled;
-    st.mode.value = s.mode;
-    st.csel.value = s.canvasSelector;
-    st.x.value = s.canvasX;
-    st.y.value = s.canvasY;
     st.sel.value = s.selector;
-    const isCanvas = s.mode === 'canvas';
-    st.canvasFields.style.display = isCanvas ? '' : 'none';
-    st.selectorFields.style.display = isCanvas ? 'none' : '';
     updateStepVisual(i);
   }
-
   function updateStepVisual(i) {
     const st = ui.steps[i];
     if (st) st.block.classList.toggle('off', !settings.steps[i].enabled);
@@ -750,8 +649,8 @@
     });
     handle.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      let left = Math.max(0, Math.min(window.innerWidth - box.offsetWidth, e.clientX - offX));
-      let top = Math.max(0, Math.min(window.innerHeight - 30, e.clientY - offY));
+      const left = Math.max(0, Math.min(window.innerWidth - box.offsetWidth, e.clientX - offX));
+      const top = Math.max(0, Math.min(window.innerHeight - 30, e.clientY - offY));
       box.style.left = left + 'px'; box.style.top = top + 'px';
     });
     handle.addEventListener('pointerup', (e) => {
@@ -782,7 +681,7 @@
 
   function onKeyDown(e) {
     if (!e.altKey) return;
-    if (ui.box && ui.box.contains(e.target)) return; // digitando no painel
+    if (ui.box && ui.box.contains(e.target)) return;
     const key = (e.key || '').toLowerCase();
     if (key === CONST.HOTKEY_TOGGLE) { e.preventDefault(); toggle(); }
     else if (key === CONST.HOTKEY_CALIBRATE) { e.preventDefault(); armCalibration(0); }
