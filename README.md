@@ -18,8 +18,18 @@ Continua funcionando com a aba em segundo plano / janela minimizada.
   o console mostra o `selector` do elemento e as coordenadas x/y relativas ao canvas.
   Copie esses valores para `CONFIG.CANVAS_X` / `CONFIG.CANVAS_Y` (ou `TARGET_SELECTOR`).
 - **Alt+=** / **Alt+-** — aumenta/diminui o intervalo em 30s (mínimo 5s).
-- Painel flutuante (canto inferior direito): mostra estado (ON/OFF), intervalo atual e
-  contagem regressiva; tem campo para digitar novo intervalo (em segundos) e aplicar na hora.
+## Painel de ajustes
+
+Um painel flutuante (arrastável pelo cabeçalho e recolhível no botão `–`) permite configurar
+tudo sem tocar no código. Tudo é salvo automaticamente com `GM_setValue`:
+
+- **Cabeçalho:** bolinha verde/vermelha ON/OFF + botão **Ligar/Desligar**.
+- **Intervalo:** slider + campo em segundos sincronizados, com contagem regressiva do próximo clique.
+- **Alvo do clique:** dropdown entre "Coordenadas do canvas" e "CSS selector" (os campos
+  correspondentes aparecem conforme a escolha), botão **Calibrar** e um texto explicando o que faz.
+- **Testar clique agora:** dispara um clique único imediato para validar o alvo.
+- **Log:** mini-área com as últimas ~10 linhas, cada uma com timestamp.
+- **Salvar** / **Restaurar padrões**.
 
 ## Configuração (topo do script)
 
