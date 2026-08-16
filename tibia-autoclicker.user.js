@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tibia Auto-Clicker (CSS selector)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      2.0.0
+// @version      2.1.0
 // @description  Auto-clique sintetico a cada X minutos por seletor CSS. Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://*.tibia.com/*
@@ -188,18 +188,59 @@
    *  WEB WORKER (timer imune ao throttling de background)
    * ==========================================================================*/
 
+  // O worker orquestra a SEQUENCIA INTEIRA (para tudo escapar do throttling de
+  // background do Chrome): dispara cada clique espacado por betweenMs e, quando
+  // a sequencia termina, espera intervalMs antes do proximo ciclo.
+  //   start  -> comeca JA (primeiro ciclo imediato), depois conta o intervalo
+  //   config -> aplica novos valores e reinicia a contagem (sem re-clicar na hora)
   const WORKER_SRC = `
-    let intervalMs = 120000;
-    let timer = null;
-    function fire() { postMessage({ type: 'tick' }); schedule(); }
-    function schedule() { clearTimeout(timer); timer = setTimeout(fire, intervalMs); }
+    let intervalMs = 120000, betweenMs = 500, count = 1, running = false;
+    let timers = [];
+    function clearAll() { for (const t of timers) clearTimeout(t); timers = []; }
+    function runCycle() {
+      if (!running) return;
+      clearAll();
+      // Dispara cada clique da sequencia, espacado por betweenMs.
+      for (let i = 0; i < count; i++) {
+        timers.push(setTimeout(function () { if (running) postMessage({ type: 'click', ordinal: i }); }, i * betweenMs));
+      }
+      // Apos o ultimo clique, espera intervalMs e recomeca.
+      const lastAt = (count > 0 ? count - 1 : 0) * betweenMs;
+      const nextIn = lastAt + intervalMs;
+      timers.push(setTimeout(runCycle, nextIn));
+      postMessage({ type: 'cycle', nextIn: nextIn });
+    }
     onmessage = function (e) {
-      const msg = e.data || {};
-      if (msg.type === 'start') { intervalMs = msg.intervalMs; schedule(); }
-      else if (msg.type === 'stop') { clearTimeout(timer); timer = null; }
-      else if (msg.type === 'setInterval') { intervalMs = msg.intervalMs; if (timer !== null) schedule(); }
+      const m = e.data || {};
+      if (m.type === 'start') {
+        intervalMs = m.intervalMs; betweenMs = m.betweenMs; count = m.count;
+        running = true; runCycle();               // primeiro ciclo IMEDIATO
+      } else if (m.type === 'stop') {
+        running = false; clearAll();
+      } else if (m.type === 'config') {
+        intervalMs = m.intervalMs; betweenMs = m.betweenMs; count = m.count;
+        if (running) {                            // reinicia a contagem, sem re-clicar
+          clearAll();
+          timers.push(setTimeout(runCycle, intervalMs));
+          postMessage({ type: 'cycle', nextIn: intervalMs });
+        }
+      }
     };
   `;
+
+  // Lista dos cliques ativos, com o indice original de cada um.
+  function activeStepList() {
+    const a = [];
+    settings.steps.forEach((s, i) => { if (s.enabled) a.push({ s, i }); });
+    return a;
+  }
+  function seqConfig() {
+    return {
+      intervalMs: settings.intervalMs,
+      betweenMs: Math.max(0, Number(settings.betweenClicksMs) || 0),
+      count: activeStepList().length,
+    };
+  }
 
   function createWorker() {
     if (worker) return;
@@ -208,21 +249,27 @@
     worker = new Worker(url);
     URL.revokeObjectURL(url);
     worker.onmessage = function (e) {
-      if (e.data && e.data.type === 'tick') {
-        runSequence(false);
-        nextClickAt = Date.now() + settings.intervalMs;
+      const d = e.data || {};
+      if (d.type === 'click') {
+        const list = activeStepList();
+        const item = list[d.ordinal];
+        if (item) clickStep(item.s, `[C${item.i + 1}]`);
+      } else if (d.type === 'cycle') {
+        nextClickAt = Date.now() + d.nextIn; // quando comeca o proximo ciclo
       }
     };
   }
   function workerStart() {
     createWorker();
-    nextClickAt = Date.now() + settings.intervalMs;
-    worker.postMessage({ type: 'start', intervalMs: settings.intervalMs });
+    const cfg = seqConfig();
+    // Countdown otimista ate a mensagem 'cycle' chegar do worker.
+    nextClickAt = Date.now() + Math.max(0, cfg.count - 1) * cfg.betweenMs + cfg.intervalMs;
+    worker.postMessage(Object.assign({ type: 'start' }, cfg));
   }
   function workerStop() { if (worker) worker.postMessage({ type: 'stop' }); nextClickAt = 0; }
-  function workerSetInterval() {
-    if (worker) worker.postMessage({ type: 'setInterval', intervalMs: settings.intervalMs });
-    if (enabled) nextClickAt = Date.now() + settings.intervalMs;
+  // Aplica no worker mudancas de intervalo/delay/quantidade de cliques (se ligado).
+  function pushSeqConfig() {
+    if (worker && enabled) worker.postMessage(Object.assign({ type: 'config' }, seqConfig()));
   }
 
   /* ============================================================================
@@ -302,10 +349,10 @@
     return true;
   }
 
-  // Dispara a sequencia de cliques ativos, com delay entre eles.
+  // Dispara a sequencia de cliques ativos, com delay entre eles (usado nos
+  // testes manuais, em foreground). Quando LIGADO, quem orquestra e o worker.
   function runSequence(manual) {
-    const active = [];
-    settings.steps.forEach((s, i) => { if (s.enabled) active.push({ s, i }); });
+    const active = activeStepList();
     if (!active.length) { panelLog('Nenhum clique ativo.'); return; }
     let k = 0;
     (function next() {
@@ -397,7 +444,7 @@
   function applyIntervalMs(newMs) {
     settings.intervalMs = clampIntervalMs(newMs);
     saveSettings();
-    workerSetInterval();
+    pushSeqConfig();   // reinicia a contagem no worker com o novo valor
     syncIntervalUI();
   }
   function incInterval() { applyIntervalMs(settings.intervalMs + CONST.STEP_MS); }
@@ -552,7 +599,7 @@
       };
 
       const idx = i;
-      refs.en.addEventListener('change', () => { settings.steps[idx].enabled = refs.en.checked; saveSettings(); updateStepVisual(idx); });
+      refs.en.addEventListener('change', () => { settings.steps[idx].enabled = refs.en.checked; saveSettings(); updateStepVisual(idx); pushSeqConfig(); });
       refs.sel.addEventListener('change', () => { settings.steps[idx].selector = refs.sel.value.trim(); saveSettings(); });
       refs.calBtn.addEventListener('click', () => armCalibration(idx));
       refs.testBtn.addEventListener('click', () => clickStep(settings.steps[idx], `TESTE [C${idx + 1}]`));
@@ -570,7 +617,7 @@
     ui.slider.addEventListener('input', () => applyIntervalMs(Number(ui.slider.value) * 1000));
     ui.secs.addEventListener('change', () => applyIntervalMs(Number(ui.secs.value) * 1000));
     ui.secs.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyIntervalMs(Number(ui.secs.value) * 1000); });
-    ui.between.addEventListener('change', () => { settings.betweenClicksMs = Math.max(0, Number(ui.between.value) || 0); saveSettings(); });
+    ui.between.addEventListener('change', () => { settings.betweenClicksMs = Math.max(0, Number(ui.between.value) || 0); saveSettings(); pushSeqConfig(); });
 
     box.querySelector('#ac-runall').addEventListener('click', () => runSequence(true));
     ui.saveBtn = box.querySelector('#ac-save');
