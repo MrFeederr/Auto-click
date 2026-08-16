@@ -45,7 +45,10 @@ Painel flutuante (arrastável pelo cabeçalho, recolhível no botão `–`). Tud
   que aciona de forma confiável o handler/ação padrão de elementos DOM.
 - O **cronômetro** roda num **Web Worker** (Blob URL) para escapar do *throttling* de timers de
   background do Chrome; o disparo acontece na thread principal.
-- Um **áudio silencioso** (WebAudio, ganho 0) toca em loop para impedir o Chrome de congelar a aba.
+- Um `<audio>` em loop com um WAV de **amplitude mínima** (inaudível, mas não-zero) mantém a aba
+  marcada como "tocando áudio", o que impede o Chrome de aplicar *throttling* nos timers em
+  segundo plano. (Um áudio de ganho 0 **não** funciona: o Chrome o detecta como silêncio e não
+  concede a isenção — por isso o WAV tem amostras não-zero.)
 
 > ⚠️ Alguns clientes checam `event.isTrusted` e ignoram qualquer evento gerado por script.
 > Nesse caso, nenhum userscript funciona — só automação em nível de navegador/SO. Se o **Testar**
