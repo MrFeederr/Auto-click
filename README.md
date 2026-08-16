@@ -43,12 +43,10 @@ Painel flutuante (arrastável pelo cabeçalho, recolhível no botão `–`). Tud
   (`pointermove → mousedown → mouseup → click → pointerup`, com `button:0`/`buttons:1`,
   `clientX/clientY`, `screenX/screenY`, `bubbles:true`) **mais a chamada nativa `element.click()`**,
   que aciona de forma confiável o handler/ação padrão de elementos DOM.
-- O **cronômetro** roda num **Web Worker** (Blob URL) para escapar do *throttling* de timers de
-  background do Chrome; o disparo acontece na thread principal.
-- Um `<audio>` em loop com um WAV de **amplitude mínima** (inaudível, mas não-zero) mantém a aba
-  marcada como "tocando áudio", o que impede o Chrome de aplicar *throttling* nos timers em
-  segundo plano. (Um áudio de ganho 0 **não** funciona: o Chrome o detecta como silêncio e não
-  concede a isenção — por isso o WAV tem amostras não-zero.)
+- O **cronômetro e o ritmo da sequência inteira** rodam num **Web Worker** (Blob URL) para escapar
+  do *throttling* de timers de background do Chrome; o disparo do clique acontece na thread principal.
+- Cada clique usa um `pointerId` **único**, evitando que uma eventual captura de ponteiro
+  (`setPointerCapture`) de um clique redirecione os eventos do clique seguinte.
 
 > ⚠️ Alguns clientes checam `event.isTrusted` e ignoram qualquer evento gerado por script.
 > Nesse caso, nenhum userscript funciona — só automação em nível de navegador/SO. Se o **Testar**

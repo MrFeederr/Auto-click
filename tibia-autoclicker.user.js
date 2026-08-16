@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tibia Auto-Clicker (CSS selector)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      2.2.0
+// @version      2.3.0
 // @description  Auto-clique sintetico a cada X minutos por seletor CSS. Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://baiakidle.com/*
@@ -159,60 +159,6 @@
   }
 
   /* ============================================================================
-   *  KEEP-ALIVE DE AUDIO (impede o Chrome de congelar a aba em background)
-   *  ------------------------------------------------------------------------
-   *  IMPORTANTE: o Chrome so isenta a aba do throttling de timers de background
-   *  quando ela esta REALMENTE emitindo audio audivel. Um oscilador com ganho 0
-   *  produz amostras zeradas -> Chrome considera "silencio" -> NAO isenta, e os
-   *  timers (inclusive os do worker) sofrem throttling depois de alguns minutos.
-   *  Por isso tocamos um <audio> em loop com um WAV de amplitude MINIMA (inaudivel,
-   *  mas nao-zero), que faz o Chrome marcar a aba como "tocando audio".
-   * ==========================================================================*/
-
-  let keepAliveAudio = null; // <audio> em loop
-
-  // Gera um data-URI de WAV mono, 8 kHz, ~0.5 s, com amplitude minima nao-zero.
-  function buildSilentWavUri() {
-    const rate = 8000, secs = 0.5, n = Math.floor(rate * secs);
-    const buf = new ArrayBuffer(44 + n * 2);
-    const v = new DataView(buf);
-    const wStr = (off, s) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)); };
-    wStr(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); wStr(8, 'WAVE');
-    wStr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); // PCM
-    v.setUint16(22, 1, true); v.setUint32(24, rate, true);
-    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-    wStr(36, 'data'); v.setUint32(40, n * 2, true);
-    // Amplitude 8/32767 (~ -72 dBFS): inaudivel, mas amostras nao-zero suficientes
-    // para o Chrome marcar a aba como audivel e conceder a isencao de throttling.
-    for (let i = 0, off = 44; i < n; i++, off += 2) v.setInt16(off, i % 2 ? -8 : 8, true);
-    let bin = ''; const bytes = new Uint8Array(buf);
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return 'data:audio/wav;base64,' + btoa(bin);
-  }
-
-  function startAudioKeepAlive() {
-    if (keepAliveAudio) { keepAliveAudio.play().catch(() => {}); return; }
-    try {
-      keepAliveAudio = new Audio(buildSilentWavUri());
-      keepAliveAudio.loop = true;
-      // Volume normal e SEM mute (o Chrome so isenta abas com midia audivel);
-      // a inaudibilidade vem do CONTEUDO do WAV, nao de abaixar o volume.
-      keepAliveAudio.volume = 0.5;
-      keepAliveAudio.muted = false;
-      // play() precisa de gesto do usuario; enable() vem de clique/atalho, entao ok.
-      const p = keepAliveAudio.play();
-      if (p && p.catch) p.catch((e) => console.warn('[AutoClick] keep-alive audio bloqueado (autoplay):', e));
-    } catch (e) {
-      console.warn('[AutoClick] Keep-alive de audio falhou:', e);
-    }
-  }
-  function stopAudioKeepAlive() {
-    if (!keepAliveAudio) return;
-    try { keepAliveAudio.pause(); } catch (e) {}
-    keepAliveAudio = null;
-  }
-
-  /* ============================================================================
    *  WEB WORKER (timer imune ao throttling de background)
    * ==========================================================================*/
 
@@ -320,31 +266,40 @@
     return { sx: x + (window.screenX || 0), sy: y + (window.screenY || 0) };
   }
 
+  // Cada clique usa um pointerId DIFERENTE. Reusar o mesmo id faz o jogo, se
+  // tiver capturado o ponteiro no clique anterior (setPointerCapture), redirecionar
+  // os eventos do clique seguinte para o elemento errado -> so o 1o clique funciona.
+  let pointerSeq = 1;
+
   // Todos os eventos usam o botao ESQUERDO: button:0 e buttons:1 enquanto pressionado.
-  function firePointerEvent(el, type, x, y, pressure) {
+  function firePointerEvent(el, type, x, y, pressure, pid) {
     if (typeof PointerEvent !== 'function') return;
     const { sx, sy } = screenXY(x, y);
     const down = (type === 'pointerdown');
     const up = (type === 'pointerup');
-    el.dispatchEvent(new PointerEvent(type, {
-      bubbles: true, cancelable: true, composed: true, view: PAGE_WIN,
-      pointerId: 1, pointerType: 'mouse', isPrimary: true,
-      width: 1, height: 1, pressure: pressure != null ? pressure : (down ? 0.5 : 0),
-      button: (down || up) ? 0 : -1,   // 0 = esquerdo; -1 = nenhum (para move)
-      buttons: down ? 1 : 0,           // 1 = esquerdo pressionado
-      clientX: x, clientY: y, screenX: sx, screenY: sy,
-    }));
+    try {
+      el.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true, view: PAGE_WIN,
+        pointerId: pid, pointerType: 'mouse', isPrimary: true,
+        width: 1, height: 1, pressure: pressure != null ? pressure : (down ? 0.5 : 0),
+        button: (down || up) ? 0 : -1,   // 0 = esquerdo; -1 = nenhum (para move)
+        buttons: down ? 1 : 0,           // 1 = esquerdo pressionado
+        clientX: x, clientY: y, screenX: sx, screenY: sy,
+      }));
+    } catch (e) {}
   }
   function fireMouseEvent(el, type, x, y) {
     const { sx, sy } = screenXY(x, y);
     const down = (type === 'mousedown');
-    el.dispatchEvent(new MouseEvent(type, {
-      bubbles: true, cancelable: true, composed: true, view: PAGE_WIN,
-      button: 0,                        // 0 = botao esquerdo
-      buttons: down ? 1 : 0,
-      clientX: x, clientY: y, screenX: sx, screenY: sy,
-      detail: type === 'click' ? 1 : 0,
-    }));
+    try {
+      el.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, cancelable: true, composed: true, view: PAGE_WIN,
+        button: 0,                        // 0 = botao esquerdo
+        buttons: down ? 1 : 0,
+        clientX: x, clientY: y, screenX: sx, screenY: sy,
+        detail: type === 'click' ? 1 : 0,
+      }));
+    } catch (e) {}
   }
 
   // Dispara UM clique (esquerdo) sintetico completo no elemento do step.
@@ -352,21 +307,27 @@
     const t = resolveStepTarget(step);
     if (!t) return false;
     const { el, clientX, clientY } = t;
+    const pid = ++pointerSeq; // pointerId unico para este clique
 
+    if (el.disabled) { panelLog(`${label} ignorado: elemento desabilitado`); return false; }
+
+    // Libera qualquer captura de ponteiro remanescente do clique anterior.
+    try { if (el.hasPointerCapture && el.hasPointerCapture(pid)) el.releasePointerCapture(pid); } catch (e) {}
     // Foco (jogos costumam ignorar input quando a aba/elemento perde foco).
     try { window.focus(); } catch (e) {}
     try { el.focus({ preventScroll: true }); } catch (e) {}
 
     // Sequencia completa de eventos sinteticos (botao esquerdo).
-    firePointerEvent(el, 'pointermove', clientX, clientY, 0);
-    fireMouseEvent(el, 'mousemove', clientX, clientY);
-    firePointerEvent(el, 'pointerover', clientX, clientY, 0);
+    firePointerEvent(el, 'pointerover', clientX, clientY, 0, pid);
+    firePointerEvent(el, 'pointerenter', clientX, clientY, 0, pid);
     fireMouseEvent(el, 'mouseover', clientX, clientY);
-    firePointerEvent(el, 'pointerdown', clientX, clientY, 0.5);
+    firePointerEvent(el, 'pointermove', clientX, clientY, 0, pid);
+    fireMouseEvent(el, 'mousemove', clientX, clientY);
+    firePointerEvent(el, 'pointerdown', clientX, clientY, 0.5, pid);
     fireMouseEvent(el, 'mousedown', clientX, clientY);
+    firePointerEvent(el, 'pointerup', clientX, clientY, 0, pid);
     fireMouseEvent(el, 'mouseup', clientX, clientY);
     fireMouseEvent(el, 'click', clientX, clientY);
-    firePointerEvent(el, 'pointerup', clientX, clientY, 0);
 
     // Metodo nativo: aciona de forma confiavel o handler/acao padrao de
     // elementos DOM (botoes, links). E o que a maioria dos scripts usa.
@@ -450,7 +411,6 @@
   function enable() {
     if (enabled) return;
     enabled = true;
-    startAudioKeepAlive();
     workerStart();
     const cfg = seqConfig();
     panelLog(`LIGADO | ${cfg.count} clique(s) | delay ${cfg.betweenMs}ms | ciclo ${cfg.intervalMs / 1000}s`);
@@ -460,7 +420,6 @@
     if (!enabled) return;
     enabled = false;
     workerStop();
-    stopAudioKeepAlive();
     panelLog('DESLIGADO');
     updateHeader();
   }
