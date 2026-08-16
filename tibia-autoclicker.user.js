@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tibia Auto-Clicker (CSS selector)
 // @namespace    https://github.com/mrfeederr/auto-click
-// @version      2.5.0
+// @version      2.6.0
 // @description  Auto-clique sintetico a cada X minutos por seletor CSS. Ate 4 cliques em sequencia com delay, funciona em background (Web Worker + audio silencioso), painel de ajustes didatico e calibracao.
 // @author       you
 // @match        https://baiakidle.com/*
@@ -167,38 +167,28 @@
   // a sequencia termina, espera intervalMs antes do proximo ciclo.
   //   start  -> comeca JA (primeiro ciclo imediato), depois conta o intervalo
   //   config -> aplica novos valores e reinicia a contagem (sem re-clicar na hora)
+  // O worker e apenas o CRONOMETRO do ciclo: a cada disparo ele avisa a thread
+  // principal ('tick'), e a thread principal roda a sequencia INTEIRA (mesma
+  // funcao runSequence usada pelo botao "Testar sequencia"). O gap entre ticks =
+  // duracao da sequencia + intervalo, para o intervalo contar apos o loop terminar.
   const WORKER_SRC = `
-    let intervalMs = 120000, betweenMs = 500, count = 1, running = false;
-    let timers = [];
-    function clearAll() { for (const t of timers) clearTimeout(t); timers = []; }
-    function runCycle() {
+    let intervalMs = 120000, betweenMs = 500, count = 1, running = false, timer = null;
+    function gap() { return (count > 0 ? count - 1 : 0) * betweenMs + intervalMs; }
+    function tick() {
       if (!running) return;
-      clearAll();
-      // Dispara cada clique da sequencia, espacado por betweenMs.
-      for (let i = 0; i < count; i++) {
-        timers.push(setTimeout(function () { if (running) postMessage({ type: 'click', ordinal: i }); }, i * betweenMs));
-      }
-      // Momento do ULTIMO clique do loop.
-      const lastAt = (count > 0 ? count - 1 : 0) * betweenMs;
-      // A contagem do intervalo comeca DEPOIS que o loop termina (ultimo clique).
-      timers.push(setTimeout(function () { if (running) postMessage({ type: 'cycle', nextIn: intervalMs }); }, lastAt));
-      // Proximo loop = fim do loop atual + intervalo.
-      timers.push(setTimeout(runCycle, lastAt + intervalMs));
+      postMessage({ type: 'tick' });
+      timer = setTimeout(tick, gap());
     }
     onmessage = function (e) {
       const m = e.data || {};
       if (m.type === 'start') {
         intervalMs = m.intervalMs; betweenMs = m.betweenMs; count = m.count;
-        running = true; runCycle();               // primeiro ciclo IMEDIATO
+        running = true; clearTimeout(timer); tick();     // primeiro loop IMEDIATO
       } else if (m.type === 'stop') {
-        running = false; clearAll();
+        running = false; clearTimeout(timer);
       } else if (m.type === 'config') {
         intervalMs = m.intervalMs; betweenMs = m.betweenMs; count = m.count;
-        if (running) {                            // reinicia a contagem, sem re-clicar
-          clearAll();
-          timers.push(setTimeout(runCycle, intervalMs));
-          postMessage({ type: 'cycle', nextIn: intervalMs });
-        }
+        if (running) { clearTimeout(timer); timer = setTimeout(tick, intervalMs); } // reinicia a contagem
       }
     };
   `;
@@ -225,12 +215,10 @@
     URL.revokeObjectURL(url);
     worker.onmessage = function (e) {
       const d = e.data || {};
-      if (d.type === 'click') {
-        const list = activeStepList();
-        const item = list[d.ordinal];
-        if (item) clickStep(item.s, `[C${item.i + 1}]`);
-      } else if (d.type === 'cycle') {
-        nextClickAt = Date.now() + d.nextIn; // quando comeca o proximo ciclo
+      if (d.type === 'tick') {
+        const cfg = seqConfig();
+        nextClickAt = Date.now() + Math.max(0, cfg.count - 1) * cfg.betweenMs + cfg.intervalMs;
+        runSequence(false); // roda a sequencia inteira na thread principal
       }
     };
   }
@@ -244,7 +232,10 @@
   function workerStop() { if (worker) worker.postMessage({ type: 'stop' }); nextClickAt = 0; }
   // Aplica no worker mudancas de intervalo/delay/quantidade de cliques (se ligado).
   function pushSeqConfig() {
-    if (worker && enabled) worker.postMessage(Object.assign({ type: 'config' }, seqConfig()));
+    if (worker && enabled) {
+      worker.postMessage(Object.assign({ type: 'config' }, seqConfig()));
+      nextClickAt = Date.now() + seqConfig().intervalMs; // countdown reinicia
+    }
   }
 
   /* ============================================================================
@@ -337,7 +328,12 @@
 
     const tag = el.tagName ? el.tagName.toLowerCase() : '?';
     const selShort = (step.selector || '').slice(0, 40);
-    panelLog(`${label} <${tag}> (${Math.round(clientX)},${Math.round(clientY)}) « ${selShort}`);
+    // Diagnostico: [act:A] = ha "user activation" (gesto recente); [act:-] = nao ha.
+    // Se so funciona com act:A, o jogo exige gesto do usuario (nao ha como um
+    // userscript falsificar isso com evento sintetico).
+    let act = '?';
+    try { if (navigator.userActivation) act = navigator.userActivation.isActive ? 'A' : '-'; } catch (e) {}
+    panelLog(`${label} <${tag}> [act:${act}] (${Math.round(clientX)},${Math.round(clientY)}) « ${selShort}`);
     return true;
   }
 
